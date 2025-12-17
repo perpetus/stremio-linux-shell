@@ -21,7 +21,7 @@ wrap_browser_process_handler! {
             let mut client = ChromiumClient::new(
                 self.viewport.clone(),
                 self.sender.clone(),
-                std::sync::Arc::new(std::sync::Mutex::new(None)),
+
                 self.pbo_manager.clone(),
                 self.buffer_pool.clone(),
             );

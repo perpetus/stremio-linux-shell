@@ -18,11 +18,8 @@ pub enum MprisCommand {
 #[derive(Debug, Clone)]
 pub enum UserEvent {
     Raise,
-    Show,
-    Hide,
     Quit,
-    MpvEventAvailable,
-    WebViewEventAvailable,
+
     MprisCommand(MprisCommand),
     MetadataUpdate {
         title: Option<String>,

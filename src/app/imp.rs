@@ -4,7 +4,7 @@ use std::{
 };
 
 use adw::{prelude::*, subclass::prelude::*};
-use flume;
+
 use gtk::glib::{self, ControlFlow, Properties, clone};
 
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
         webview::WebView, window::Window,
     },
     chromium::{Chromium, ChromiumEvent},
+    discord::adapter::DiscordAdapter,
     mpris::{adapter::MprisAdapter, metadata},
     shared::{
         ipc::{
@@ -38,6 +39,7 @@ pub struct Application {
     browser: Rc<RefCell<Option<Chromium>>>,
     deeplink: Rc<RefCell<Option<String>>>,
     mpris_adapter: Rc<RefCell<Option<MprisAdapter>>>,
+    discord_adapter: Rc<RefCell<Option<DiscordAdapter>>>,
 }
 
 impl Application {
@@ -74,6 +76,17 @@ impl ApplicationImpl for Application {
                     .and_then(|w| w.downcast::<Window>().ok())
                 {
                     let window = glib::Object::new::<SettingsWindow>();
+                    window.set_fps_active(main_window.get_fps_visible());
+
+                    let discord_active = app
+                        .imp()
+                        .discord_adapter
+                        .borrow()
+                        .as_ref()
+                        .map(|d| d.is_connected())
+                        .unwrap_or(false);
+                    window.set_discord_active(discord_active);
+
                     window.present(Some(&main_window));
 
                     let main_window_weak = main_window.downgrade();
@@ -83,6 +96,29 @@ impl ApplicationImpl for Application {
                         glib::closure_local!(move |_: SettingsWindow, active: bool| {
                             if let Some(main_window) = main_window_weak.upgrade() {
                                 main_window.set_fps_visible(active);
+                            }
+                        }),
+                    );
+
+                    let discord_adapter = app.imp().discord_adapter.clone();
+                    window.connect_closure(
+                        "discord-toggled",
+                        false,
+                        glib::closure_local!(move |_: SettingsWindow, active: bool| {
+                            let mut adapter_lock = discord_adapter.borrow_mut();
+                            if let Some(adapter) = adapter_lock.as_mut() {
+                                if active {
+                                    let _ = adapter.connect();
+                                } else {
+                                    let _ = adapter.disconnect();
+                                }
+                            } else if active {
+                                // Lazy init if not exists? (Should exist though)
+                                if let Ok(mut adapter) = DiscordAdapter::new("1450906751607111781")
+                                {
+                                    let _ = adapter.connect();
+                                    *adapter_lock = Some(adapter);
+                                }
                             }
                         }),
                     );
@@ -119,12 +155,20 @@ impl ApplicationImpl for Application {
         let adapter = MprisAdapter::new(mpris_sender.clone());
         *self.mpris_adapter.borrow_mut() = Some(adapter);
 
+        // Initialize Discord adapter (disconnected)
+        if let Ok(discord) = DiscordAdapter::new("1450906751607111781") {
+            *self.discord_adapter.borrow_mut() = Some(discord);
+        }
+
         let mpris_adapter_ref = self.mpris_adapter.clone();
+        let discord_adapter_ref = self.discord_adapter.clone();
         glib::MainContext::default().spawn_local(clone!(
             #[weak]
             video,
             #[strong]
             mpris_adapter_ref,
+            #[strong]
+            discord_adapter_ref,
             async move {
                 while let Ok(event) = mpris_receiver.recv_async().await {
                     let mut adapter_lock = mpris_adapter_ref.borrow_mut();
@@ -137,7 +181,26 @@ impl ApplicationImpl for Application {
                                 thumbnail,
                                 logo,
                             } => {
-                                adapter.update_metadata(title, artist, poster, thumbnail, logo);
+                                adapter.update_metadata(
+                                    title.clone(),
+                                    artist.clone(),
+                                    poster.clone(),
+                                    thumbnail,
+                                    logo.clone(),
+                                );
+                                if let Some(discord) = discord_adapter_ref.borrow_mut().as_mut() {
+                                    tracing::info!(
+                                        "Discord RPC: updating activity for '{}' (Logo: {:?})",
+                                        title.as_deref().unwrap_or("Unknown"),
+                                        logo
+                                    );
+                                    // User requested Logo instead of Poster
+                                    let _ = discord.update_activity(
+                                        title.as_deref(),
+                                        artist.as_deref(),
+                                        logo.as_deref(),
+                                    );
+                                }
                             }
                             UserEvent::MprisCommand(cmd) => match cmd {
                                 MprisCommand::Play => video
@@ -224,7 +287,8 @@ impl ApplicationImpl for Application {
 
         let browser = self.browser.clone();
         let mpris_adapter_ref = self.mpris_adapter.clone();
-        let mpris_sender = mpris_sender.clone();
+        let discord_adapter_ref = self.discord_adapter.clone();
+        let mpris_sender_mpv = mpris_sender.clone();
         video.connect_mpv_property_change(move |name, value| {
             if let Some(ref browser) = *browser.borrow() {
                 let message = ipc::create_response(IpcEvent::Mpv(IpcEventMpv::Change((
@@ -260,10 +324,19 @@ impl ApplicationImpl for Application {
                             };
 
                             if !adapter.rich_metadata_active {
-                                adapter.update_metadata_simple(Some(clean_title), None, None, None);
+                                adapter.update_metadata_simple(
+                                    Some(clean_title.clone()),
+                                    None,
+                                    None,
+                                    None,
+                                );
                             }
 
-                            metadata::fetch_metadata(title.to_string(), mpris_sender.clone());
+                            if let Some(discord) = discord_adapter_ref.borrow_mut().as_mut() {
+                                let _ = discord.update_activity(Some(&clean_title), None, None);
+                            }
+
+                            metadata::fetch_metadata(clean_title, mpris_sender_mpv.clone());
                         }
                     }
                     "duration" => {
@@ -278,7 +351,10 @@ impl ApplicationImpl for Application {
                     }
                     "sid" => {
                         if let Some(sid) = value.as_str() {
-                            metadata::fetch_metadata_by_sid(sid.to_string(), mpris_sender.clone());
+                            metadata::fetch_metadata_by_sid(
+                                sid.to_string(),
+                                mpris_sender_mpv.clone(),
+                            );
                         }
                     }
                     _ => {}
@@ -360,6 +436,17 @@ impl ApplicationImpl for Application {
                                             }
                                             _ => {}
                                         },
+                                        IpcEvent::MetadataUpdate(data) => {
+                                            mpris_sender
+                                                .send(UserEvent::MetadataUpdate {
+                                                    title: data.title,
+                                                    artist: data.artist,
+                                                    poster: data.poster,
+                                                    thumbnail: data.thumbnail,
+                                                    logo: data.logo,
+                                                })
+                                                .ok();
+                                        }
                                         _ => {}
                                     }
                                 }

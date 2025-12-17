@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 /// Number of buffers in the pool
-const BUFFER_COUNT: usize = 3;
+const BUFFER_COUNT: usize = 5;
 
 /// A single buffer entry in the pool
 pub struct PoolEntry {

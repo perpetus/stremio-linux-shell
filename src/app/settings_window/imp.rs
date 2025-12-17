@@ -13,6 +13,8 @@ pub struct SettingsWindow {
     pub cpu_row: TemplateChild<adw::ActionRow>,
     #[template_child]
     pub gpu_row: TemplateChild<adw::ActionRow>,
+    #[template_child]
+    pub discord_switch: TemplateChild<gtk::Switch>,
 }
 
 #[glib::object_subclass]
@@ -38,6 +40,9 @@ impl ObjectImpl for SettingsWindow {
         SIGNALS.get_or_init(|| {
             vec![
                 glib::subclass::Signal::builder("fps-toggled")
+                    .param_types([bool::static_type()])
+                    .build(),
+                glib::subclass::Signal::builder("discord-toggled")
                     .param_types([bool::static_type()])
                     .build(),
             ]
@@ -69,6 +74,14 @@ impl SettingsWindow {
             .unwrap_or("Unknown");
         self.gpu_row.set_property("subtitle", gpu);
     }
+
+    pub fn set_fps_active(&self, active: bool) {
+        self.fps_switch.set_active(active);
+    }
+
+    pub fn set_discord_active(&self, active: bool) {
+        self.discord_switch.set_active(active);
+    }
 }
 
 impl WidgetImpl for SettingsWindow {}
@@ -81,5 +94,11 @@ impl SettingsWindow {
     fn on_fps_toggled(&self, _pspec: &glib::ParamSpec) {
         let active = self.fps_switch.is_active();
         self.obj().emit_by_name::<()>("fps-toggled", &[&active]);
+    }
+
+    #[template_callback]
+    fn on_discord_toggled(&self, _pspec: &glib::ParamSpec) {
+        let active = self.discord_switch.is_active();
+        self.obj().emit_by_name::<()>("discord-toggled", &[&active]);
     }
 }

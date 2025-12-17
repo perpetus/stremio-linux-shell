@@ -1,5 +1,6 @@
 mod imp;
 
+use adw::subclass::prelude::*;
 use glib::Object;
 use gtk::{glib, prelude::*};
 
@@ -12,6 +13,14 @@ glib::wrapper! {
 impl SettingsWindow {
     pub fn new(app: &impl IsA<gtk::Application>) -> Self {
         Object::builder().property("application", app).build()
+    }
+
+    pub fn set_fps_active(&self, active: bool) {
+        self.imp().set_fps_active(active);
+    }
+
+    pub fn set_discord_active(&self, active: bool) {
+        self.imp().set_discord_active(active);
     }
 }
 

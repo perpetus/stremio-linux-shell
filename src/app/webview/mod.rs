@@ -96,10 +96,10 @@ impl WebView {
         event_controller_motion.connect_scroll(move |controller, delta_x, delta_y| {
             match controller.unit() {
                 ScrollUnit::Wheel => {
-                    callback(pointer_state.clone(), delta_x * -300.0, delta_y * -300.0);
+                    callback(pointer_state.clone(), delta_x * -200.0, delta_y * -200.0);
                 }
                 ScrollUnit::Surface => {
-                    callback(pointer_state.clone(), delta_x * 3.0, delta_y * 3.0);
+                    callback(pointer_state.clone(), delta_x * 2.0, delta_y * 2.0);
                 }
                 _ => {}
             }

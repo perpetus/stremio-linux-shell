@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use cef::{rc::*, *};
 use flume::Sender;
+use rayon::prelude::*;
 
 use crate::{
     chromium::{ChromiumEvent, types::Viewport},
@@ -14,7 +15,7 @@ wrap_render_handler! {
     pub struct ChromiumRenderHandler {
         viewport: Arc<RwLock<Viewport>>,
         sender: Sender<ChromiumEvent>,
-        last_paint: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+
         pbo_manager: Arc<PboManager>,
         buffer_pool: Arc<BufferPool>,
     }
@@ -59,16 +60,7 @@ wrap_render_handler! {
         ) {
             let fn_start = std::time::Instant::now();
 
-            // Gap detection
-            if let Ok(mut last_paint) = self.last_paint.lock() {
-                if let Some(last) = *last_paint {
-                    let elapsed = fn_start.duration_since(last);
-                    if elapsed.as_millis() > 500 {
-                        tracing::error!("OnPaint GAP CRITICAL: {:?} - possible navigation stall", elapsed);
-                    }
-                }
-                *last_paint = Some(fn_start);
-            }
+
             let _lock_time = fn_start.elapsed();
 
             if let Some(dirty_rects_slice) = dirty_rects {
@@ -120,26 +112,23 @@ wrap_render_handler! {
                     // The consumer (WebView) will then upload starting from (x, y).
 
                     unsafe {
+                        let src_addr = buffer as usize;
+                        let dst_addr = dest_ptr as usize;
                         let src_stride = width * 4;
                         let row_bytes = w * 4;
 
-                        // Optimize for full frame copy vs partial
-                        if w == width && h == height {
-                             std::ptr::copy_nonoverlapping(buffer as *const u8, dest_ptr, (width * height * 4) as usize);
-                        } else {
-                            // Row-by-row copy for dirty region
-                            for r in 0..h {
-                                let src_offset = ((y + r) * src_stride + x * 4) as usize;
-                                // Dest buffer has same layout as source (full frame)
-                                let dst_offset = src_offset;
+                        // Parallel copy using Rayon
+                        // Cast specific pointers inside the closure to avoid Send/Sync issues with raw pointers
+                        (0..h).into_par_iter().for_each(|r| {
+                            let src_offset = ((y + r) * src_stride + x * 4) as usize;
+                            // Dest buffer has same layout as source (full frame)
+                            let dst_offset = src_offset;
 
-                                std::ptr::copy_nonoverlapping(
-                                    (buffer as *const u8).add(src_offset),
-                                    dest_ptr.add(dst_offset),
-                                    row_bytes as usize
-                                );
-                            }
-                        }
+                            let src = (src_addr as *const u8).add(src_offset);
+                            let dst = (dst_addr as *mut u8).add(dst_offset);
+
+                            std::ptr::copy_nonoverlapping(src, dst, row_bytes as usize);
+                        });
                     }
                     let memcpy_time = memcpy_start.elapsed();
 

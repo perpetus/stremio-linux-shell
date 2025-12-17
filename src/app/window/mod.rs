@@ -149,8 +149,15 @@ impl Window {
         self.imp().fps_label.set_visible(visible);
     }
 
+    pub fn get_fps_visible(&self) -> bool {
+        self.imp().fps_label.is_visible()
+    }
+
     pub fn set_fps(&self, fps: u32) {
-        self.imp().fps_label.set_label(&format!("FPS: {fps}"));
+        let label = &self.imp().fps_label;
+        if label.is_mapped() {
+            label.set_label(&format!("FPS: {fps}"));
+        }
     }
 }
 

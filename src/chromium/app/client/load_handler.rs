@@ -63,14 +63,12 @@ wrap_load_handler! {
 
                 if is_main {
                     // Calculate navigation duration
-                    if let Ok(mut nav) = NAV_START.lock() {
-                        if let Some(start) = nav.take() {
-                            let duration = start.elapsed();
-                            if duration.as_secs() > 1 {
-                                tracing::error!("NAVIGATION SLOW: {:?} for status={}", duration, http_status_code);
-                            } else {
-                                tracing::info!("Navigation duration: {:?}, status={}", duration, http_status_code);
-                            }
+                    if let Ok(mut nav) = NAV_START.lock() && let Some(start) = nav.take() {
+                        let duration = start.elapsed();
+                        if duration.as_secs() > 1 {
+                            tracing::error!("NAVIGATION SLOW: {:?} for status={}", duration, http_status_code);
+                        } else {
+                            tracing::info!("Navigation duration: {:?}, status={}", duration, http_status_code);
                         }
                     }
                     if http_status_code == 200 {

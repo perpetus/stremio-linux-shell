@@ -40,6 +40,24 @@
             </child>
           </object>
         </child>
+
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Integrations</property>
+            <child>
+              <object class="AdwActionRow">
+                <property name="title">Discord Rich Presence</property>
+                <property name="subtitle">Show what you are watching on Discord</property>
+                <child>
+                  <object class="GtkSwitch" id="discord_switch">
+                    <property name="valign">center</property>
+                    <signal name="notify::active" handler="on_discord_toggled" swapped="true"/>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
   </template>

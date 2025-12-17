@@ -13,6 +13,15 @@ pub enum IpcEventMpv {
 }
 
 #[derive(Deserialize, Debug)]
+pub struct MetadataUpdate {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub poster: Option<String>,
+    pub thumbnail: Option<String>,
+    pub logo: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
 pub enum IpcEvent {
     Init,
     Ready,
@@ -21,6 +30,7 @@ pub enum IpcEvent {
     Visibility(bool),
     OpenMedia(String),
     Mpv(IpcEventMpv),
+    MetadataUpdate(MetadataUpdate),
 }
 
 impl TryFrom<&str> for IpcEvent {

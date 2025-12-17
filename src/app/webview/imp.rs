@@ -42,6 +42,9 @@ pub struct WebView {
     pub pointer_state: Rc<PointerState>,
     pub keyboard_state: Rc<KeyboardState>,
     pub frames: Box<SegQueue<Frame>>,
+    // FPS Tracking
+    pub fps_last_time: Cell<Option<std::time::Instant>>,
+    pub fps_counter: Cell<u32>,
 }
 
 #[glib::object_subclass]
@@ -133,14 +136,37 @@ impl WidgetImpl for WebView {
 impl GLAreaImpl for WebView {
     fn render(&self, _: &GLContext) -> Propagation {
         let scale_factor = self.scale_factor.get();
-        let mut composed_frame: Option<Frame> = None;
 
         // Process ALL frames in the queue to ensure all partial updates are applied
+        // Frame Coalescing for RESIZE events:
+        // 1. Collect all valid frames from queue
+        // 2. Iterate and skip frames if the NEXT frame has a DIFFERENT size (intermediate resize step)
+        // 3. Always process frames if size is consistent (partial updates) or if it's the last frame
+
+        let mut frames_vec = Vec::new();
         while let Some(frame) = self.frames.pop() {
-            let buffer = frame.buffer.as_deref().map(|v| v.as_slice()).unwrap_or(&[]);
-            if buffer.is_empty() {
+            // Basic validation
+            let has_data = frame
+                .buffer
+                .as_deref()
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+            if has_data {
+                frames_vec.push(frame);
+            }
+        }
+
+        let mut iter = frames_vec.into_iter().peekable();
+        while let Some(frame) = iter.next() {
+            // Check optimization: skip if next frame has different size
+            if let Some(next_frame) = iter.peek()
+                && (frame.full_width != next_frame.full_width
+                    || frame.full_height != next_frame.full_height)
+            {
                 continue;
             }
+
+            let buffer = frame.buffer.as_deref().map(|v| v.as_slice()).unwrap_or(&[]);
 
             // Only resize if dimensions changed (cached comparison)
             let last_w = self.last_width.get();
@@ -225,16 +251,22 @@ impl GLAreaImpl for WebView {
 
                 BindBuffer(PIXEL_UNPACK_BUFFER, 0);
             }
-
-            composed_frame = Some(frame);
         }
 
-        // Draw the final state of the textue
-        if let Some(frame) = composed_frame {
-            gl::resize_viewport(
-                frame.full_width * scale_factor,
-                frame.full_height * scale_factor,
-            );
+        // Always clear the background to prevent garbage artifacts
+        // We handle the rendering fully, so we stop propagation.
+        unsafe {
+            epoxy::ClearColor(0.0, 0.0, 0.0, 1.0);
+            epoxy::Clear(epoxy::COLOR_BUFFER_BIT);
+        }
+
+        // Draw the final state of the texture (either updated or cached)
+        // We use last_width/last_height which represents the current texture dimensions.
+        let width = self.last_width.get();
+        let height = self.last_height.get();
+
+        if width > 0 && height > 0 {
+            gl::resize_viewport(width * scale_factor, height * scale_factor);
 
             gl::draw_texture(
                 self.program.get(),
@@ -244,6 +276,22 @@ impl GLAreaImpl for WebView {
             );
         }
 
-        Propagation::Proceed
+        // FPS Calculation
+        let now = std::time::Instant::now();
+        if let Some(last_time) = self.fps_last_time.get() {
+            if now.duration_since(last_time).as_secs() >= 1 {
+                let fps = self.fps_counter.get();
+                self.obj().emit_by_name::<()>("fps-update", &[&fps]);
+                self.fps_last_time.set(Some(now));
+                self.fps_counter.set(0);
+            } else {
+                self.fps_counter.set(self.fps_counter.get() + 1);
+            }
+        } else {
+            self.fps_last_time.set(Some(now));
+            self.fps_counter.set(0);
+        }
+
+        Propagation::Stop
     }
 }

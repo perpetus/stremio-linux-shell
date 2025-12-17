@@ -25,7 +25,7 @@ wrap_client! {
     pub struct ChromiumClient {
         viewport: Arc<RwLock<Viewport>>,
         sender: Sender<ChromiumEvent>,
-        last_paint: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+
         pbo_manager: Arc<PboManager>,
         buffer_pool: Arc<BufferPool>,
     }
@@ -35,7 +35,7 @@ wrap_client! {
             Some(ChromiumRenderHandler::new(
                 self.viewport.clone(),
                 self.sender.clone(),
-                self.last_paint.clone(),
+
                 self.pbo_manager.clone(),
                 self.buffer_pool.clone(),
             ))

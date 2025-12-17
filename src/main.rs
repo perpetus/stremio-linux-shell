@@ -1,6 +1,7 @@
 mod app;
 mod chromium;
 mod config;
+mod discord;
 mod mpris;
 mod server;
 mod shared;

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::event::{IpcEvent, IpcEventMpv};
+use super::event::{IpcEvent, IpcEventMpv, MetadataUpdate};
 
 #[derive(Deserialize, Debug)]
 pub struct IpcMessageRequest {
@@ -68,6 +68,11 @@ impl TryFrom<IpcMessageRequest> for IpcEvent {
                                     .to_owned();
 
                                 Ok(IpcEvent::Mpv(IpcEventMpv::Set((name, value))))
+                            }
+                            "metadata-update" => {
+                                let data: MetadataUpdate = serde_json::from_value(data)
+                                    .expect("Invalid metadata-update object");
+                                Ok(IpcEvent::MetadataUpdate(data))
                             }
                             _ => Err("Unknown method"),
                         },
