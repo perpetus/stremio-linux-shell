@@ -180,12 +180,6 @@ pub fn update_texture(
     }
 }
 
-pub fn resize_viewport(width: i32, height: i32) {
-    unsafe {
-        epoxy::Viewport(0, 0, width, height);
-    }
-}
-
 pub fn draw_texture(program: GLuint, texture: GLuint, texture_uniform: GLint, vao: GLuint) {
     unsafe {
         epoxy::UseProgram(program);

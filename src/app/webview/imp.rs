@@ -37,6 +37,8 @@ pub struct WebView {
     pub frames: Box<SegQueue<Frame>>,
     pub frame_count: Cell<u32>,
     pub last_frame_time: Cell<i64>,
+    pub texture_width: Cell<i32>,
+    pub texture_height: Cell<i32>,
 }
 
 #[glib::object_subclass]
@@ -128,25 +130,49 @@ impl WidgetImpl for WebView {
 
 impl GLAreaImpl for WebView {
     fn render(&self, _: &GLContext) -> Propagation {
+        unsafe {
+            epoxy::ClearColor(0.0, 0.0, 0.0, 1.0);
+            epoxy::Clear(epoxy::COLOR_BUFFER_BIT);
+        }
+
         let start = std::time::Instant::now();
-        let scale_factor = self.scale_factor.get();
         let queue_len = self.frames.len();
         tracing::info!("Render start. Queue len: {}", queue_len);
 
         for i in 0..UPDATES_PER_RENDER {
             if let Some(frame) = self.frames.pop() {
-                gl::resize_texture(self.texture.get(), frame.full_width, frame.full_height);
+                let width = self.texture_width.get();
+                let height = self.texture_height.get();
 
                 let upload_start = std::time::Instant::now();
-                gl::update_texture(
-                    self.texture.get(),
-                    frame.x,
-                    frame.y,
-                    frame.width,
-                    frame.height,
-                    frame.full_width,
-                    &frame.buffer,
-                );
+
+                if width != frame.full_width || height != frame.full_height {
+                    gl::resize_texture(self.texture.get(), frame.full_width, frame.full_height);
+                    self.texture_width.set(frame.full_width);
+                    self.texture_height.set(frame.full_height);
+
+                    // Force full upload on resize to avoid artifacts
+                    gl::update_texture(
+                        self.texture.get(),
+                        0,
+                        0,
+                        frame.full_width,
+                        frame.full_height,
+                        frame.full_width,
+                        &frame.buffer,
+                    );
+                } else {
+                    gl::update_texture(
+                        self.texture.get(),
+                        frame.x,
+                        frame.y,
+                        frame.width,
+                        frame.height,
+                        frame.full_width,
+                        &frame.buffer,
+                    );
+                }
+
                 tracing::info!(
                     "Frame {}/{}: Texture upload took {:?}",
                     i + 1,
@@ -154,27 +180,31 @@ impl GLAreaImpl for WebView {
                     upload_start.elapsed()
                 );
 
-                gl::resize_viewport(
-                    frame.full_width * scale_factor,
-                    frame.full_height * scale_factor,
+                tracing::info!(
+                    "Frame {}/{}: Texture upload took {:?}",
+                    i + 1,
+                    queue_len,
+                    upload_start.elapsed()
                 );
-
-                gl::draw_texture(
-                    self.program.get(),
-                    self.texture.get(),
-                    self.texture_uniform.get(),
-                    self.vao.get(),
-                );
-
-                self.update_fps();
             } else {
                 break;
             }
         }
 
+        if self.texture_width.get() > 0 && self.texture_height.get() > 0 {
+            gl::draw_texture(
+                self.program.get(),
+                self.texture.get(),
+                self.texture_uniform.get(),
+                self.vao.get(),
+            );
+        }
+
+        self.update_fps();
+
         tracing::info!("Render finished in {:?}", start.elapsed());
 
-        Propagation::Proceed
+        Propagation::Stop
     }
 }
 
