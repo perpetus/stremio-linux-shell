@@ -1,6 +1,7 @@
 mod about;
 mod config;
 mod imp;
+mod settings_window;
 mod tray;
 mod video;
 mod webview;

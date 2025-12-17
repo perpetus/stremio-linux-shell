@@ -6,6 +6,12 @@
     <menu id="menu">
         <section>
             <item>
+                <attribute name="label" translatable="yes">_Settings</attribute>
+                <attribute name="action">app.settings</attribute>
+            </item>
+        </section>
+        <section>
+            <item>
                 <attribute name="label" translatable="yes">_About Stremio</attribute>
                 <attribute name="action">app.show-about</attribute>
             </item>
@@ -39,6 +45,20 @@
                     <object class="GtkOverlay" id="overlay">
                         <property name="vexpand">true</property>
                         <property name="hexpand">true</property>
+                        <child type="overlay">
+                            <object class="GtkLabel" id="fps_label">
+                                <property name="halign">end</property>
+                                <property name="valign">start</property>
+                                <property name="visible">False</property>
+                                <property name="margin-top">10</property>
+                                <property name="margin-end">10</property>
+                                <property name="label">FPS: --</property>
+                                <property name="width-request">60</property>
+                                <style>
+                                    <class name="title-1"/>
+                                </style>
+                            </object>
+                        </child>
                     </object>
                 </property>
             </object>

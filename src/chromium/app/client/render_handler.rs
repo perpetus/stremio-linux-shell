@@ -59,6 +59,9 @@ wrap_render_handler! {
         ) {
             if let Some(dirty_rects) = dirty_rects
                 && let Some(dirty_rect) = dirty_rects.first() {
+                    tracing::info!("OnPaint: {} rects. Rect: x={}, y={}, w={}, h={}. Frame: {}x{}",
+                        dirty_rects.len(), dirty_rect.x, dirty_rect.y, dirty_rect.width, dirty_rect.height, width, height
+                    );
                     let size = (width * height * 4) as usize;
                     let buffer_slice = unsafe { slice::from_raw_parts(buffer, size) };
                     let buffer = Arc::from(buffer_slice);

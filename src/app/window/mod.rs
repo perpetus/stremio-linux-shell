@@ -33,8 +33,12 @@ impl Window {
 
     pub fn set_overlay(&self, widget: &impl IsA<Widget>) {
         let window = self.imp();
+        let offload = graphics_offload(widget);
 
-        window.overlay.add_overlay(&graphics_offload(widget));
+        window.overlay.add_overlay(&offload);
+        window
+            .fps_label
+            .insert_after(&*window.overlay, Some(&offload));
     }
 
     pub fn set_fullscreen(&self, fullscreen: bool) {
@@ -80,6 +84,14 @@ impl Window {
 
     pub fn open_uri(&self, uri: Url) {
         self.imp().open_uri(uri);
+    }
+
+    pub fn set_fps_visible(&self, visible: bool) {
+        self.imp().fps_label.set_visible(visible);
+    }
+
+    pub fn set_fps(&self, fps: u32) {
+        self.imp().fps_label.set_label(&format!("FPS: {fps}"));
     }
 }
 

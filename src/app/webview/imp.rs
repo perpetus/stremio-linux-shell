@@ -35,6 +35,8 @@ pub struct WebView {
     pub pointer_state: Rc<PointerState>,
     pub keyboard_state: Rc<KeyboardState>,
     pub frames: Box<SegQueue<Frame>>,
+    pub frame_count: Cell<u32>,
+    pub last_frame_time: Cell<i64>,
 }
 
 #[glib::object_subclass]
@@ -46,6 +48,18 @@ impl ObjectSubclass for WebView {
 
 #[glib::derived_properties]
 impl ObjectImpl for WebView {
+    fn signals() -> &'static [glib::subclass::Signal] {
+        static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+            std::sync::OnceLock::new();
+        SIGNALS.get_or_init(|| {
+            vec![
+                glib::subclass::Signal::builder("fps-update")
+                    .param_types([u32::static_type()])
+                    .build(),
+            ]
+        })
+    }
+
     fn constructed(&self) {
         self.parent_constructed();
 
@@ -63,6 +77,14 @@ impl WidgetImpl for WebView {
 
         if gl_area.error().is_some() {
             return;
+        }
+
+        unsafe {
+            let renderer = epoxy::GetString(epoxy::RENDERER);
+            if !renderer.is_null() {
+                let renderer = std::ffi::CStr::from_ptr(renderer as *const i8);
+                let _ = super::GPU_RENDERER.set(renderer.to_string_lossy().into_owned());
+            }
         }
 
         let vertex_shader = gl::compile_vertex_shader(VERTEX_SRC);
@@ -106,11 +128,16 @@ impl WidgetImpl for WebView {
 
 impl GLAreaImpl for WebView {
     fn render(&self, _: &GLContext) -> Propagation {
+        let start = std::time::Instant::now();
         let scale_factor = self.scale_factor.get();
+        let queue_len = self.frames.len();
+        tracing::info!("Render start. Queue len: {}", queue_len);
 
-        for _ in 0..UPDATES_PER_RENDER {
+        for i in 0..UPDATES_PER_RENDER {
             if let Some(frame) = self.frames.pop() {
                 gl::resize_texture(self.texture.get(), frame.full_width, frame.full_height);
+
+                let upload_start = std::time::Instant::now();
                 gl::update_texture(
                     self.texture.get(),
                     frame.x,
@@ -119,6 +146,12 @@ impl GLAreaImpl for WebView {
                     frame.height,
                     frame.full_width,
                     &frame.buffer,
+                );
+                tracing::info!(
+                    "Frame {}/{}: Texture upload took {:?}",
+                    i + 1,
+                    queue_len,
+                    upload_start.elapsed()
                 );
 
                 gl::resize_viewport(
@@ -132,11 +165,32 @@ impl GLAreaImpl for WebView {
                     self.texture_uniform.get(),
                     self.vao.get(),
                 );
+
+                self.update_fps();
             } else {
                 break;
             }
         }
 
+        tracing::info!("Render finished in {:?}", start.elapsed());
+
         Propagation::Proceed
+    }
+}
+
+impl WebView {
+    fn update_fps(&self) {
+        let now = glib::monotonic_time();
+        let last_time = self.last_frame_time.get();
+        let frame_count = self.frame_count.get();
+
+        if now - last_time >= 1_000_000 {
+            tracing::debug!("FPS: {}", frame_count);
+            self.obj().emit_by_name::<()>("fps-update", &[&frame_count]);
+            self.frame_count.set(0);
+            self.last_frame_time.set(now);
+        } else {
+            self.frame_count.set(frame_count + 1);
+        }
     }
 }

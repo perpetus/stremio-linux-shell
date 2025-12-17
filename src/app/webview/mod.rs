@@ -1,7 +1,8 @@
 mod gl;
 mod imp;
 
-use std::{path::PathBuf, rc::Rc};
+use std::{path::PathBuf, rc::Rc, sync::OnceLock};
+pub static GPU_RENDERER: OnceLock<String> = OnceLock::new();
 
 use adw::subclass::prelude::ObjectSubclassIsExt;
 use gtk::{

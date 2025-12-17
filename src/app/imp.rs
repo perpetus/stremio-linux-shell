@@ -7,7 +7,10 @@ use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib::{self, ControlFlow, Properties, clone};
 
 use crate::{
-    app::{config::URI_SCHEME, tray::Tray, video::Video, webview::WebView, window::Window},
+    app::{
+        config::URI_SCHEME, settings_window::SettingsWindow, tray::Tray, video::Video,
+        webview::WebView, window::Window,
+    },
     chromium::{Chromium, ChromiumEvent},
     shared::ipc::{
         self,
@@ -55,6 +58,34 @@ impl ApplicationImpl for Application {
         app.setup_actions();
         app.setup_accels();
 
+        let settings_action = gtk::gio::SimpleAction::new("settings", None);
+        settings_action.connect_activate(clone!(
+            #[weak]
+            app,
+            move |_, _| {
+                if let Some(main_window) = app
+                    .active_window()
+                    .and_then(|w| w.downcast::<Window>().ok())
+                {
+                    let window = glib::Object::new::<SettingsWindow>();
+                    window.present(Some(&main_window));
+
+                    let main_window_weak = main_window.downgrade();
+                    window.connect_closure(
+                        "fps-toggled",
+                        false,
+                        glib::closure_local!(move |_: SettingsWindow, active: bool| {
+                            if let Some(main_window) = main_window_weak.upgrade() {
+                                main_window.set_fps_visible(active);
+                            }
+                        }),
+                    );
+                }
+            }
+        ));
+        app.add_action(&settings_action);
+        app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
+
         if let Some(ref mut browser) = *self.browser.borrow_mut() {
             browser.start();
         }
@@ -93,6 +124,17 @@ impl ApplicationImpl for Application {
                 }
             }
         ));
+
+        let window_weak = window.downgrade();
+        webview.connect_closure(
+            "fps-update",
+            false,
+            glib::closure_local!(move |_: super::webview::WebView, fps: u32| {
+                if let Some(window) = window_weak.upgrade() {
+                    window.set_fps(fps);
+                }
+            }),
+        );
 
         video.connect_playback_started(clone!(
             #[weak]
