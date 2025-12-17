@@ -18,12 +18,16 @@ use crate::chromium::{
     config::{IPC_MESSAGE, READY_MESSAGE},
     types::Viewport,
 };
+use crate::shared::pbo_manager::{BufferPool, PboManager};
 use render_handler::ChromiumRenderHandler;
 
 wrap_client! {
     pub struct ChromiumClient {
         viewport: Arc<RwLock<Viewport>>,
         sender: Sender<ChromiumEvent>,
+        last_paint: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+        pbo_manager: Arc<PboManager>,
+        buffer_pool: Arc<BufferPool>,
     }
 
     impl Client {
@@ -31,6 +35,9 @@ wrap_client! {
             Some(ChromiumRenderHandler::new(
                 self.viewport.clone(),
                 self.sender.clone(),
+                self.last_paint.clone(),
+                self.pbo_manager.clone(),
+                self.buffer_pool.clone(),
             ))
         }
 

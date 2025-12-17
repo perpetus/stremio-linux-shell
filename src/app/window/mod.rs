@@ -5,7 +5,10 @@ use gtk::{
     Widget,
     gdk::prelude::{DisplayExt, MonitorExt},
     gio,
-    glib::{self, object::IsA},
+    glib::{
+        self,
+        object::{IsA, ObjectExt},
+    },
     prelude::{GtkWindowExt, NativeExt, WidgetExt},
 };
 use url::Url;
@@ -48,20 +51,76 @@ impl Window {
         self.set_fullscreened(fullscreen);
     }
 
-    pub fn connect_monitor_info<F: Fn(f64, i32) + 'static>(&self, callback: F) {
-        self.connect_realize(move |window| {
-            let display = window.display();
-            let surface = window.surface();
+    pub fn connect_monitor_info<T: Fn(f64, i32, f64) + 'static>(&self, callback: T) {
+        let callback = std::rc::Rc::new(callback);
 
-            if let Some(surface) = surface
-                && let Some(monitor) = display.monitor_at_surface(&surface)
-            {
-                let refresh_rate = monitor.refresh_rate() as f64 / 1000.0;
-                let scale_factor = monitor.scale_factor();
+        self.connect_realize(glib::clone!(
+            #[weak(rename_to = window)]
+            self,
+            #[strong]
+            callback,
+            move |_| {
+                let display = window.display();
+                if let Some(monitor) = display.monitor_at_surface(&window.surface().unwrap()) {
+                    let refresh_rate = monitor.refresh_rate() as f64 / 1000.0;
+                    let scale_factor = window.scale_factor();
 
-                callback(refresh_rate, scale_factor);
+                    let mut zoom_level = 0.0;
+                    let width_mm = monitor.width_mm();
+                    let width_px = monitor.geometry().width();
+                    if scale_factor == 1 && width_mm > 0 {
+                        let dpi = width_px as f64 / (width_mm as f64 / 25.4);
+                        if dpi > 150.0 {
+                            zoom_level = 2.0;
+                        }
+                    }
+
+                    callback(refresh_rate, scale_factor, zoom_level);
+                    tracing::info!(
+                        "Monitor info initialized: refresh_rate={}, scale_factor={}, zoom_level={}",
+                        refresh_rate,
+                        scale_factor,
+                        zoom_level
+                    );
+                }
             }
-        });
+        ));
+
+        self.connect_notify_local(
+            Some("scale-factor"),
+            glib::clone!(
+                #[weak(rename_to = window)]
+                self,
+                #[strong]
+                callback,
+                move |_, _| {
+                    let display = window.display();
+                    if let Some(monitor) = display.monitor_at_surface(&window.surface().unwrap()) {
+                        let refresh_rate = monitor.refresh_rate() as f64 / 1000.0;
+                        let scale_factor = window.scale_factor();
+
+                        let mut zoom_level = 0.0;
+                        // DPI heuristic: detect HiDPI screens incorrectly reporting scale 1
+                        let width_mm = monitor.width_mm();
+                        let width_px = monitor.geometry().width();
+                        if scale_factor == 1 && width_mm > 0 {
+                            let dpi = width_px as f64 / (width_mm as f64 / 25.4);
+                            if dpi > 150.0 {
+                                zoom_level = 3.0;
+                            }
+                        }
+
+                        callback(refresh_rate, scale_factor, zoom_level);
+                        tracing::info!(
+                            "Monitor info updated: refresh_rate={}, scale_factor={}, zoom_level={}",
+                            refresh_rate,
+                            scale_factor,
+                            zoom_level
+                        );
+                    }
+                }
+            ),
+        );
     }
 
     pub fn connect_visibility<T: Fn(bool) + 'static>(&self, callback: T) {

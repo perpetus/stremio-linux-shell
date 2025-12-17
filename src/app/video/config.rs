@@ -35,4 +35,6 @@ pub const STRING_PROPERTIES: &[&str] = &[
     "mute",
     "metadata",
     "video-params",
+    "vid",
+    "sub-ass-override",
 ];

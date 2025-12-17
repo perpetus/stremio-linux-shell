@@ -42,12 +42,23 @@ impl Default for WebView {
 
 impl WebView {
     pub fn render(&self, frame: Frame) {
-        self.imp().frames.push(frame);
+        let imp = self.imp();
+        imp.frames.push(frame);
     }
 
     pub fn connect_resized<T: Fn(i32, i32) + 'static>(&self, callback: T) {
-        self.connect_resize(move |_, width, height| {
-            callback(width, height);
+        self.connect_resize(move |widget, width, height| {
+            // GTK reports physical pixels; convert to logical for CEF
+            let scale = widget.scale_factor();
+            tracing::info!(
+                "Resize: physical={}x{} scale={} logical={}x{}",
+                width,
+                height,
+                scale,
+                width / scale,
+                height / scale
+            );
+            callback(width / scale, height / scale);
         });
     }
 
@@ -85,10 +96,10 @@ impl WebView {
         event_controller_motion.connect_scroll(move |controller, delta_x, delta_y| {
             match controller.unit() {
                 ScrollUnit::Wheel => {
-                    callback(pointer_state.clone(), delta_x * -100.0, delta_y * -100.0);
+                    callback(pointer_state.clone(), delta_x * -300.0, delta_y * -300.0);
                 }
                 ScrollUnit::Surface => {
-                    callback(pointer_state.clone(), delta_x - 2.0, delta_y - 2.0);
+                    callback(pointer_state.clone(), delta_x * 3.0, delta_y * 3.0);
                 }
                 _ => {}
             }

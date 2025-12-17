@@ -23,6 +23,7 @@ use url::Url;
 use crate::chromium::config::MAX_FRAME_RATE;
 use crate::shared::{
     Frame,
+    pbo_manager::{BufferPool, PboManager},
     states::{KeyboardState, PointerState},
 };
 
@@ -43,6 +44,8 @@ pub struct Chromium {
     browser: Arc<Mutex<Option<Browser>>>,
     viewport: Arc<RwLock<Viewport>>,
     receiver: Receiver<ChromiumEvent>,
+    pub pbo_manager: Arc<PboManager>,
+    pub buffer_pool: Arc<BufferPool>,
 }
 
 impl Chromium {
@@ -53,9 +56,17 @@ impl Chromium {
 
         let browser = Arc::new(Mutex::new(None));
         let viewport = Arc::new(RwLock::new(Viewport::default()));
+        let pbo_manager = Arc::new(PboManager::default());
+        let buffer_pool = Arc::new(BufferPool::default());
 
         let (sender, receiver) = flume::unbounded();
-        let app = ChromiumApp::new(browser.clone(), viewport.clone(), sender);
+        let app = ChromiumApp::new(
+            browser.clone(),
+            viewport.clone(),
+            sender,
+            pbo_manager.clone(),
+            buffer_pool.clone(),
+        );
 
         let cache_path = data_dir.join("cache");
         let log_path = data_dir.join("log");
@@ -78,6 +89,8 @@ impl Chromium {
             browser,
             viewport,
             receiver,
+            pbo_manager,
+            buffer_pool,
         }
     }
 
@@ -158,7 +171,19 @@ impl Chromium {
             if let Some(browser_host) = self.browser_host() {
                 browser_host.was_resized();
                 browser_host.invalidate(PET_VIEW.into());
+                // Re-apply zoom level on resize as it might reset
+                browser_host.set_zoom_level(viewport.zoom_level);
             }
+        }
+    }
+
+    pub fn set_zoom(&self, level: f64) {
+        if let Ok(mut viewport) = self.viewport.write() {
+            viewport.zoom_level = level;
+        }
+
+        if let Some(browser_host) = self.browser_host() {
+            browser_host.set_zoom_level(level);
         }
     }
 
@@ -185,7 +210,6 @@ impl Chromium {
     pub fn forward_scroll(&self, pointer_state: &PointerState, delta_x: f64, delta_y: f64) {
         if let Some(browser_host) = self.browser_host() {
             let mouse_event = MouseEvent::from(pointer_state);
-
             browser_host.send_mouse_wheel_event(Some(&mouse_event), delta_x as i32, delta_y as i32);
         }
     }

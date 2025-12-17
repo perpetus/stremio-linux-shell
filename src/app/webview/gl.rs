@@ -147,39 +147,6 @@ pub fn resize_texture(texture: GLuint, width: i32, height: i32) {
     }
 }
 
-pub fn update_texture(
-    texture: GLuint,
-    x: GLint,
-    y: GLint,
-    width: GLint,
-    height: GLint,
-    stride: GLint,
-    buffer: &[u8],
-) {
-    unsafe {
-        BindTexture(TEXTURE_2D, texture);
-        PixelStorei(UNPACK_ROW_LENGTH, stride);
-
-        let offset = ((y * stride + x) * 4) as usize;
-        let pixels = buffer.as_ptr().add(offset);
-
-        TexSubImage2D(
-            TEXTURE_2D,
-            0,
-            x,
-            y,
-            width,
-            height,
-            BGRA,
-            UNSIGNED_BYTE,
-            pixels as _,
-        );
-
-        PixelStorei(UNPACK_ROW_LENGTH, 0);
-        BindTexture(TEXTURE_2D, 0);
-    }
-}
-
 pub fn draw_texture(program: GLuint, texture: GLuint, texture_uniform: GLint, vao: GLuint) {
     unsafe {
         epoxy::UseProgram(program);
@@ -191,3 +158,53 @@ pub fn draw_texture(program: GLuint, texture: GLuint, texture_uniform: GLint, va
         epoxy::DrawArrays(epoxy::TRIANGLE_STRIP, 0, 4);
     }
 }
+
+pub fn resize_viewport(width: i32, height: i32) {
+    unsafe {
+        Viewport(0, 0, width, height);
+    }
+}
+
+// EGL Types and Constants
+
+pub fn create_pbo(width: i32, height: i32) -> GLuint {
+    unsafe {
+        let mut pbo = 0;
+        GenBuffers(1, &mut pbo);
+
+        BindBuffer(PIXEL_UNPACK_BUFFER, pbo);
+        BufferData(
+            PIXEL_UNPACK_BUFFER,
+            (width * height * BYTES_PER_PIXEL) as GLsizeiptr,
+            std::ptr::null(),
+            STREAM_DRAW,
+        );
+
+        BindBuffer(PIXEL_UNPACK_BUFFER, 0);
+
+        pbo
+    }
+}
+
+pub fn resize_pbo(pbo: GLuint, width: i32, height: i32) {
+    unsafe {
+        BindBuffer(PIXEL_UNPACK_BUFFER, pbo);
+
+        let mut pbo_size = 0;
+        GetBufferParameteriv(PIXEL_UNPACK_BUFFER, BUFFER_SIZE, &mut pbo_size);
+
+        let new_size = width * height * BYTES_PER_PIXEL;
+        if new_size > pbo_size {
+            BufferData(
+                PIXEL_UNPACK_BUFFER,
+                new_size as GLsizeiptr,
+                std::ptr::null(),
+                STREAM_DRAW,
+            );
+        }
+
+        BindBuffer(PIXEL_UNPACK_BUFFER, 0);
+    }
+}
+
+pub const BYTES_PER_PIXEL: i32 = 4;

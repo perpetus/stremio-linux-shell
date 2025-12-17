@@ -1,6 +1,7 @@
 mod app;
 mod chromium;
 mod config;
+mod mpris;
 mod server;
 mod shared;
 mod utils;
@@ -10,6 +11,11 @@ use std::{env, fs, ptr};
 use clap::Parser;
 use gtk::glib::{ExitCode, object::ObjectExt};
 use tokio::runtime::Runtime;
+
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 use crate::{
     app::Application,

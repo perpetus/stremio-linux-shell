@@ -4,6 +4,7 @@ use std::{
 };
 
 use adw::{prelude::*, subclass::prelude::*};
+use flume;
 use gtk::glib::{self, ControlFlow, Properties, clone};
 
 use crate::{
@@ -12,9 +13,13 @@ use crate::{
         webview::WebView, window::Window,
     },
     chromium::{Chromium, ChromiumEvent},
-    shared::ipc::{
-        self,
-        event::{IpcEvent, IpcEventMpv},
+    mpris::{adapter::MprisAdapter, metadata},
+    shared::{
+        ipc::{
+            self,
+            event::{IpcEvent, IpcEventMpv},
+        },
+        types::{MprisCommand, SCALE_FACTOR, UserEvent},
     },
 };
 
@@ -32,6 +37,7 @@ pub struct Application {
     tray: RefCell<Option<Tray>>,
     browser: Rc<RefCell<Option<Chromium>>>,
     deeplink: Rc<RefCell<Option<String>>>,
+    mpris_adapter: Rc<RefCell<Option<MprisAdapter>>>,
 }
 
 impl Application {
@@ -104,11 +110,70 @@ impl ApplicationImpl for Application {
         let tray = Tray::default();
         let video = Video::default();
         let webview = WebView::default();
-
         let window = Window::new(&app);
         window.set_property("decorations", self.decorations.get());
         window.set_underlay(&video);
         window.set_overlay(&webview);
+
+        let (mpris_sender, mpris_receiver) = flume::unbounded::<UserEvent>();
+        let adapter = MprisAdapter::new(mpris_sender.clone());
+        *self.mpris_adapter.borrow_mut() = Some(adapter);
+
+        let mpris_adapter_ref = self.mpris_adapter.clone();
+        glib::MainContext::default().spawn_local(clone!(
+            #[weak]
+            video,
+            #[strong]
+            mpris_adapter_ref,
+            async move {
+                while let Ok(event) = mpris_receiver.recv_async().await {
+                    let mut adapter_lock = mpris_adapter_ref.borrow_mut();
+                    if let Some(adapter) = adapter_lock.as_mut() {
+                        match event {
+                            UserEvent::MetadataUpdate {
+                                title,
+                                artist,
+                                poster,
+                                thumbnail,
+                                logo,
+                            } => {
+                                adapter.update_metadata(title, artist, poster, thumbnail, logo);
+                            }
+                            UserEvent::MprisCommand(cmd) => match cmd {
+                                MprisCommand::Play => video
+                                    .send_command("set".into(), vec!["pause".into(), "no".into()]),
+                                MprisCommand::Pause => video
+                                    .send_command("set".into(), vec!["pause".into(), "yes".into()]),
+                                MprisCommand::PlayPause => {
+                                    video.send_command("cycle".into(), vec!["pause".into()])
+                                }
+                                MprisCommand::Stop => video.send_command("stop".into(), vec![]),
+                                MprisCommand::Seek(offset) => {
+                                    let seconds = offset as f64 / 1_000_000.0;
+                                    video.send_command(
+                                        "seek".into(),
+                                        vec![format!("{}", seconds), "relative".into()],
+                                    )
+                                }
+                                MprisCommand::SetPosition(pos) => {
+                                    let seconds = pos as f64 / 1_000_000.0;
+                                    video.send_command(
+                                        "seek".into(),
+                                        vec![format!("{}", seconds), "absolute".into()],
+                                    )
+                                }
+                                MprisCommand::SetRate(rate) => video.send_command(
+                                    "set".into(),
+                                    vec!["speed".into(), format!("{}", rate)],
+                                ),
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        ));
 
         let browser = self.browser.clone();
         window.connect_monitor_info(clone!(
@@ -116,9 +181,14 @@ impl ApplicationImpl for Application {
             video,
             #[weak]
             webview,
-            move |refresh_rate, scale_factor| {
+            move |refresh_rate, scale_factor, zoom_level| {
+                SCALE_FACTOR.store(
+                    f64::from(scale_factor).to_bits(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 if let Some(ref browser) = *browser.borrow() {
                     browser.set_monitor_info(refresh_rate, scale_factor);
+                    browser.set_zoom(zoom_level);
                     video.set_property("scale-factor", scale_factor);
                     webview.set_property("scale-factor", scale_factor);
                 }
@@ -153,14 +223,66 @@ impl ApplicationImpl for Application {
         ));
 
         let browser = self.browser.clone();
+        let mpris_adapter_ref = self.mpris_adapter.clone();
+        let mpris_sender = mpris_sender.clone();
         video.connect_mpv_property_change(move |name, value| {
             if let Some(ref browser) = *browser.borrow() {
                 let message = ipc::create_response(IpcEvent::Mpv(IpcEventMpv::Change((
                     name.to_string(),
-                    value,
+                    value.clone(),
                 ))));
 
                 browser.post_message(message);
+            }
+
+            let mut adapter_lock = mpris_adapter_ref.borrow_mut();
+            if let Some(adapter) = adapter_lock.as_mut() {
+                match name {
+                    "pause" => {
+                        if let Some(paused) = value.as_bool() {
+                            adapter.update_playback_status(if paused {
+                                "Paused"
+                            } else {
+                                "Playing"
+                            });
+                        }
+                    }
+                    "media-title" => {
+                        if let Some(title) = value.as_str() {
+                            let clean_title = if title.starts_with("file://")
+                                || title.contains("&tr=")
+                                || title.contains("announce")
+                                || title.contains("dht:")
+                            {
+                                "Stremio".to_string()
+                            } else {
+                                title.to_string()
+                            };
+
+                            if !adapter.rich_metadata_active {
+                                adapter.update_metadata_simple(Some(clean_title), None, None, None);
+                            }
+
+                            metadata::fetch_metadata(title.to_string(), mpris_sender.clone());
+                        }
+                    }
+                    "duration" => {
+                        if let Some(d) = value.as_f64() {
+                            adapter.update_metadata_simple(None, None, None, Some(d));
+                        }
+                    }
+                    "time-pos" => {
+                        if let Some(p) = value.as_f64() {
+                            adapter.update_position(p);
+                        }
+                    }
+                    "sid" => {
+                        if let Some(sid) = value.as_str() {
+                            metadata::fetch_metadata_by_sid(sid.to_string(), mpris_sender.clone());
+                        }
+                    }
+                    _ => {}
+                }
             }
         });
 
@@ -169,83 +291,86 @@ impl ApplicationImpl for Application {
         let startup_url = self.startup_url.clone();
         let open_uri = self.open_uri.clone();
         let deeplink = self.deeplink.clone();
-        glib::idle_add_local(clone!(
-            #[weak]
-            webview,
-            #[weak]
-            video,
-            #[weak]
-            window,
-            #[weak]
-            app,
-            #[upgrade_or]
-            ControlFlow::Continue,
-            move || {
-                if let Some(ref browser) = *browser.borrow() {
-                    browser.on_event(|event| match event {
-                        ChromiumEvent::Ready => {
-                            browser.dev_tools(dev_mode);
-                            browser.load_url(&startup_url.borrow());
-                        }
-                        ChromiumEvent::Loaded => {
-                            if let Some(ref uri) = *open_uri.borrow()
-                                && uri.starts_with(URI_SCHEME)
-                            {
-                                let message =
-                                    ipc::create_response(IpcEvent::OpenMedia(uri.to_string()));
-                                browser.post_message(message);
+        glib::timeout_add_local(
+            std::time::Duration::from_millis(5),
+            clone!(
+                #[weak]
+                webview,
+                #[weak]
+                video,
+                #[weak]
+                window,
+                #[weak]
+                app,
+                #[upgrade_or]
+                ControlFlow::Continue,
+                move || {
+                    if let Some(ref browser) = *browser.borrow() {
+                        browser.on_event(|event| match event {
+                            ChromiumEvent::Ready => {
+                                browser.dev_tools(dev_mode);
+                                browser.load_url(&startup_url.borrow());
                             }
-                        }
-                        ChromiumEvent::Fullscreen(state) => window.set_fullscreen(state),
-                        ChromiumEvent::Render(frame) => webview.render(frame),
-                        ChromiumEvent::Open(url) => window.open_uri(url),
-                        ChromiumEvent::Ipc(message) => {
-                            if let Ok(event) = ipc::parse_request(&message) {
-                                match event {
-                                    IpcEvent::Init => {
-                                        let message = ipc::create_response(IpcEvent::Init);
-                                        browser.post_message(message);
-                                    }
-                                    IpcEvent::Ready => {
-                                        if let Some(ref uri) = *deeplink.borrow() {
-                                            let message = ipc::create_response(
-                                                IpcEvent::OpenMedia(uri.to_string()),
-                                            );
-                                            browser.post_message(message);
-                                        }
-                                    }
-                                    IpcEvent::Quit => {
-                                        app.quit();
-                                    }
-                                    IpcEvent::Fullscreen(state) => {
-                                        window.set_fullscreen(state);
-
-                                        let message =
-                                            ipc::create_response(IpcEvent::Fullscreen(state));
-                                        browser.post_message(message);
-                                    }
-                                    IpcEvent::Mpv(event) => match event {
-                                        IpcEventMpv::Observe(name) => {
-                                            video.observe_mpv_property(name)
-                                        }
-                                        IpcEventMpv::Command((name, args)) => {
-                                            video.send_command(name, args)
-                                        }
-                                        IpcEventMpv::Set((name, value)) => {
-                                            video.set_mpv_property(name, value)
-                                        }
-                                        _ => {}
-                                    },
-                                    _ => {}
+                            ChromiumEvent::Loaded => {
+                                if let Some(ref uri) = *open_uri.borrow()
+                                    && uri.starts_with(URI_SCHEME)
+                                {
+                                    let message =
+                                        ipc::create_response(IpcEvent::OpenMedia(uri.to_string()));
+                                    browser.post_message(message);
                                 }
                             }
-                        }
-                    });
-                }
+                            ChromiumEvent::Fullscreen(state) => window.set_fullscreen(state),
+                            ChromiumEvent::Render(frame) => webview.render(frame),
+                            ChromiumEvent::Open(url) => window.open_uri(url),
+                            ChromiumEvent::Ipc(message) => {
+                                if let Ok(event) = ipc::parse_request(&message) {
+                                    match event {
+                                        IpcEvent::Init => {
+                                            let message = ipc::create_response(IpcEvent::Init);
+                                            browser.post_message(message);
+                                        }
+                                        IpcEvent::Ready => {
+                                            if let Some(ref uri) = *deeplink.borrow() {
+                                                let message = ipc::create_response(
+                                                    IpcEvent::OpenMedia(uri.to_string()),
+                                                );
+                                                browser.post_message(message);
+                                            }
+                                        }
+                                        IpcEvent::Quit => {
+                                            app.quit();
+                                        }
+                                        IpcEvent::Fullscreen(state) => {
+                                            window.set_fullscreen(state);
 
-                ControlFlow::Continue
-            }
-        ));
+                                            let message =
+                                                ipc::create_response(IpcEvent::Fullscreen(state));
+                                            browser.post_message(message);
+                                        }
+                                        IpcEvent::Mpv(event) => match event {
+                                            IpcEventMpv::Observe(name) => {
+                                                video.observe_mpv_property(name)
+                                            }
+                                            IpcEventMpv::Command((name, args)) => {
+                                                video.send_command(name, args)
+                                            }
+                                            IpcEventMpv::Set((name, value)) => {
+                                                video.set_mpv_property(name, value)
+                                            }
+                                            _ => {}
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    ControlFlow::Continue
+                }
+            ),
+        );
 
         let browser = self.browser.clone();
         window.connect_visibility(clone!(

@@ -1,8 +1,11 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, sync::OnceLock};
 
 use adw::subclass::prelude::*;
 use crossbeam_queue::SegQueue;
-use epoxy::types::{GLint, GLuint};
+use epoxy::{
+    types::{GLint, GLuint},
+    *,
+};
 use gtk::{
     DropTarget,
     gdk::{DragAction, FileList, GLContext},
@@ -20,7 +23,6 @@ use crate::{
 
 pub const FRAGMENT_SRC: &str = include_str!("shader.frag");
 pub const VERTEX_SRC: &str = include_str!("shader.vert");
-pub const UPDATES_PER_RENDER: i32 = 8;
 
 #[derive(Default, Properties)]
 #[properties(wrapper_type = super::WebView)]
@@ -32,13 +34,14 @@ pub struct WebView {
     vbo: Cell<GLuint>,
     texture: Cell<GLuint>,
     texture_uniform: Cell<GLint>,
+    pbos: Cell<[GLuint; 2]>,
+    pbo_index: Cell<usize>,
+    // Cached dimensions to avoid redundant resize calls
+    last_width: Cell<i32>,
+    last_height: Cell<i32>,
     pub pointer_state: Rc<PointerState>,
     pub keyboard_state: Rc<KeyboardState>,
     pub frames: Box<SegQueue<Frame>>,
-    pub frame_count: Cell<u32>,
-    pub last_frame_time: Cell<i64>,
-    pub texture_width: Cell<i32>,
-    pub texture_height: Cell<i32>,
 }
 
 #[glib::object_subclass]
@@ -51,8 +54,7 @@ impl ObjectSubclass for WebView {
 #[glib::derived_properties]
 impl ObjectImpl for WebView {
     fn signals() -> &'static [glib::subclass::Signal] {
-        static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
-            std::sync::OnceLock::new();
+        static SIGNALS: OnceLock<Vec<glib::subclass::Signal>> = OnceLock::new();
         SIGNALS.get_or_init(|| {
             vec![
                 glib::subclass::Signal::builder("fps-update")
@@ -81,24 +83,23 @@ impl WidgetImpl for WebView {
             return;
         }
 
-        unsafe {
-            let renderer = epoxy::GetString(epoxy::RENDERER);
-            if !renderer.is_null() {
-                let renderer = std::ffi::CStr::from_ptr(renderer as *const i8);
-                let _ = super::GPU_RENDERER.set(renderer.to_string_lossy().into_owned());
-            }
-        }
-
         let vertex_shader = gl::compile_vertex_shader(VERTEX_SRC);
         let fragment_shader = gl::compile_fragment_shader(FRAGMENT_SRC);
         let program = gl::create_program(vertex_shader, fragment_shader);
         let (vao, vbo) = gl::create_geometry(program);
         let (texture, texture_uniform) = gl::create_texture(program, "text_uniform");
 
+        let width = self.obj().width();
+        let height = self.obj().height();
+        let pbo1 = gl::create_pbo(width, height);
+        let pbo2 = gl::create_pbo(width, height);
+
         self.program.set(program);
         self.vao.set(vao);
         self.vbo.set(vbo);
         self.texture.set(texture);
+        self.pbos.set([pbo1, pbo2]);
+        self.pbo_index.set(0);
         self.texture_uniform.set(texture_uniform);
 
         self.obj().add_tick_callback(|webview, _| {
@@ -116,6 +117,7 @@ impl WidgetImpl for WebView {
             epoxy::DeleteTextures(1, &self.texture.get());
             epoxy::DeleteBuffers(1, &self.vbo.get());
             epoxy::DeleteVertexArrays(1, &self.vao.get());
+            epoxy::DeleteBuffers(2, self.pbos.get().as_ptr());
         }
 
         self.program.take();
@@ -130,68 +132,110 @@ impl WidgetImpl for WebView {
 
 impl GLAreaImpl for WebView {
     fn render(&self, _: &GLContext) -> Propagation {
-        unsafe {
-            epoxy::ClearColor(0.0, 0.0, 0.0, 1.0);
-            epoxy::Clear(epoxy::COLOR_BUFFER_BIT);
-        }
+        let scale_factor = self.scale_factor.get();
+        let mut composed_frame: Option<Frame> = None;
 
-        let start = std::time::Instant::now();
-        let queue_len = self.frames.len();
-        tracing::info!("Render start. Queue len: {}", queue_len);
+        // Process ALL frames in the queue to ensure all partial updates are applied
+        while let Some(frame) = self.frames.pop() {
+            let buffer = frame.buffer.as_deref().map(|v| v.as_slice()).unwrap_or(&[]);
+            if buffer.is_empty() {
+                continue;
+            }
 
-        for i in 0..UPDATES_PER_RENDER {
-            if let Some(frame) = self.frames.pop() {
-                let width = self.texture_width.get();
-                let height = self.texture_height.get();
+            // Only resize if dimensions changed (cached comparison)
+            let last_w = self.last_width.get();
+            let last_h = self.last_height.get();
+            if frame.full_width != last_w || frame.full_height != last_h {
+                gl::resize_pbo(self.pbos.get()[0], frame.full_width, frame.full_height);
+                gl::resize_pbo(self.pbos.get()[1], frame.full_width, frame.full_height);
+                gl::resize_texture(self.texture.get(), frame.full_width, frame.full_height);
+                self.last_width.set(frame.full_width);
+                self.last_height.set(frame.full_height);
+            }
 
-                let upload_start = std::time::Instant::now();
+            unsafe {
+                let pbos = self.pbos.get();
+                let current = self.pbo_index.get();
+                let next_index = (current + 1) % 2;
+                self.pbo_index.set(next_index);
+                let next_pbo = pbos[next_index];
 
-                if width != frame.full_width || height != frame.full_height {
-                    gl::resize_texture(self.texture.get(), frame.full_width, frame.full_height);
-                    self.texture_width.set(frame.full_width);
-                    self.texture_height.set(frame.full_height);
+                BindBuffer(PIXEL_UNPACK_BUFFER, next_pbo);
 
-                    // Force full upload on resize to avoid artifacts
-                    gl::update_texture(
-                        self.texture.get(),
-                        0,
-                        0,
-                        frame.full_width,
-                        frame.full_height,
-                        frame.full_width,
-                        &frame.buffer,
-                    );
-                } else {
-                    gl::update_texture(
-                        self.texture.get(),
-                        frame.x,
-                        frame.y,
-                        frame.width,
-                        frame.height,
-                        frame.full_width,
-                        &frame.buffer,
-                    );
+                let size = (frame.full_width * frame.full_height * 4) as isize;
+                let ptr = MapBufferRange(
+                    PIXEL_UNPACK_BUFFER,
+                    0,
+                    size,
+                    MAP_WRITE_BIT | MAP_INVALIDATE_BUFFER_BIT,
+                ) as *mut u8;
+
+                if !ptr.is_null() {
+                    let stride = (frame.full_width * 4) as usize;
+                    let width_bytes = (frame.width * 4) as usize;
+
+                    // Fast path: if updating full frame, use single memcpy
+                    if frame.x == 0
+                        && frame.y == 0
+                        && frame.width == frame.full_width
+                        && frame.height == frame.full_height
+                    {
+                        std::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr, size as usize);
+                    } else {
+                        // Partial update: row-by-row copy
+                        let src_ptr = buffer.as_ptr();
+                        for row in 0..frame.height {
+                            let row_offset =
+                                (frame.y as usize + row as usize) * stride + (frame.x as usize * 4);
+
+                            std::ptr::copy_nonoverlapping(
+                                src_ptr.add(row_offset),
+                                ptr.add(row_offset),
+                                width_bytes,
+                            );
+                        }
+                    }
+
+                    UnmapBuffer(PIXEL_UNPACK_BUFFER);
                 }
 
-                tracing::info!(
-                    "Frame {}/{}: Texture upload took {:?}",
-                    i + 1,
-                    queue_len,
-                    upload_start.elapsed()
+                BindTexture(TEXTURE_2D, self.texture.get());
+
+                // Set unpacking row length for partial update from full-width PBO
+                PixelStorei(UNPACK_ROW_LENGTH, frame.full_width);
+
+                // Calculate offset in PBO for the (x, y) start of the dirty rect
+                let pbo_offset =
+                    (frame.y as usize * frame.full_width as usize + frame.x as usize) * 4;
+
+                TexSubImage2D(
+                    TEXTURE_2D,
+                    0,
+                    frame.x,
+                    frame.y,
+                    frame.width,
+                    frame.height,
+                    BGRA,
+                    UNSIGNED_BYTE,
+                    pbo_offset as *const std::ffi::c_void,
                 );
 
-                tracing::info!(
-                    "Frame {}/{}: Texture upload took {:?}",
-                    i + 1,
-                    queue_len,
-                    upload_start.elapsed()
-                );
-            } else {
-                break;
+                // Reset unpack state
+                PixelStorei(UNPACK_ROW_LENGTH, 0);
+
+                BindBuffer(PIXEL_UNPACK_BUFFER, 0);
             }
+
+            composed_frame = Some(frame);
         }
 
-        if self.texture_width.get() > 0 && self.texture_height.get() > 0 {
+        // Draw the final state of the textue
+        if let Some(frame) = composed_frame {
+            gl::resize_viewport(
+                frame.full_width * scale_factor,
+                frame.full_height * scale_factor,
+            );
+
             gl::draw_texture(
                 self.program.get(),
                 self.texture.get(),
@@ -200,27 +244,6 @@ impl GLAreaImpl for WebView {
             );
         }
 
-        self.update_fps();
-
-        tracing::info!("Render finished in {:?}", start.elapsed());
-
-        Propagation::Stop
-    }
-}
-
-impl WebView {
-    fn update_fps(&self) {
-        let now = glib::monotonic_time();
-        let last_time = self.last_frame_time.get();
-        let frame_count = self.frame_count.get();
-
-        if now - last_time >= 1_000_000 {
-            tracing::debug!("FPS: {}", frame_count);
-            self.obj().emit_by_name::<()>("fps-update", &[&frame_count]);
-            self.frame_count.set(0);
-            self.last_frame_time.set(now);
-        } else {
-            self.frame_count.set(frame_count + 1);
-        }
+        Propagation::Proceed
     }
 }

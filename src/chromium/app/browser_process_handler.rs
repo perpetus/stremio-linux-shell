@@ -5,17 +5,26 @@ use cef::{rc::*, *};
 use flume::Sender;
 
 use crate::chromium::{ChromiumEvent, app::client::ChromiumClient, types::Viewport};
+use crate::shared::pbo_manager::{BufferPool, PboManager};
 
 wrap_browser_process_handler! {
     pub struct ChromiumBrowserProcessHandler {
         browser: Arc<Mutex<Option<Browser>>>,
         viewport: Arc<RwLock<Viewport>>,
         sender: Sender<ChromiumEvent>,
+        pbo_manager: Arc<PboManager>,
+        buffer_pool: Arc<BufferPool>,
     }
 
     impl BrowserProcessHandler {
         fn on_context_initialized(&self) {
-            let mut client = ChromiumClient::new(self.viewport.clone(), self.sender.clone());
+            let mut client = ChromiumClient::new(
+                self.viewport.clone(),
+                self.sender.clone(),
+                std::sync::Arc::new(std::sync::Mutex::new(None)),
+                self.pbo_manager.clone(),
+                self.buffer_pool.clone(),
+            );
             let url = CefString::from("about:blank");
 
             let window_info = WindowInfo {
@@ -25,6 +34,7 @@ wrap_browser_process_handler! {
             };
 
             let settings = BrowserSettings {
+                windowless_frame_rate: crate::chromium::config::MAX_FRAME_RATE as i32,
                 javascript_access_clipboard: STATE_ENABLED.into(),
                 javascript_dom_paste: STATE_ENABLED.into(),
                 ..Default::default()
