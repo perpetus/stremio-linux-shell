@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+<template class="SettingsWindow" parent="AdwPreferencesDialog">
+    <property name="width-request">400</property>
+    <property name="height-request">400</property>
+
+    <child>
+      <object class="AdwPreferencesPage">
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">System</property>
+            <child>
+              <object class="AdwActionRow" id="cpu_row">
+                <property name="title">Processor</property>
+                <property name="subtitle">Unknown</property>
+              </object>
+            </child>
+            <child>
+              <object class="AdwActionRow" id="gpu_row">
+                <property name="title">Graphics</property>
+                <property name="subtitle">Unknown</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Performance</property>
+            <child>
+              <object class="AdwActionRow">
+                <property name="title">Show FPS</property>
+                <property name="subtitle">Display an FPS overlay</property>
+                <child>
+                  <object class="GtkSwitch" id="fps_switch">
+                    <property name="valign">center</property>
+                    <signal name="notify::active" handler="on_fps_toggled" swapped="true"/>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="AdwPreferencesGroup">
+            <property name="title">Integrations</property>
+            <child>
+              <object class="AdwActionRow">
+                <property name="title">Discord Rich Presence</property>
+                <property name="subtitle">Show what you are watching on Discord</property>
+                <child>
+                  <object class="GtkSwitch" id="discord_switch">
+                    <property name="valign">center</property>
+                    <signal name="notify::active" handler="on_discord_toggled" swapped="true"/>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

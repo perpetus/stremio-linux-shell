@@ -1,9 +1,9 @@
 use crate::shared::types::{MprisCommand, UserEvent};
+use flume::Sender;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
-use winit::event_loop::EventLoopProxy;
 use zbus::{Connection, interface};
 
 #[derive(Clone)]
@@ -136,18 +136,18 @@ fn build_metadata(state: &MprisState) -> HashMap<String, zbus::zvariant::OwnedVa
 
 // Interface: org.mpris.MediaPlayer2
 struct MprisRoot {
-    proxy: EventLoopProxy<UserEvent>,
+    proxy: Sender<UserEvent>,
     _state: Arc<RwLock<MprisState>>,
 }
 
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl MprisRoot {
     fn raise(&self) {
-        self.proxy.send_event(UserEvent::Raise).ok();
+        self.proxy.send(UserEvent::Raise).ok();
     }
 
     fn quit(&self) {
-        self.proxy.send_event(UserEvent::Quit).ok();
+        self.proxy.send(UserEvent::Quit).ok();
     }
 
     #[zbus(property)]
@@ -193,7 +193,7 @@ impl MprisRoot {
 
 // Interface: org.mpris.MediaPlayer2.Player
 struct MprisPlayerImpl {
-    proxy: EventLoopProxy<UserEvent>,
+    proxy: Sender<UserEvent>,
     state: Arc<RwLock<MprisState>>,
 }
 
@@ -201,49 +201,49 @@ struct MprisPlayerImpl {
 impl MprisPlayerImpl {
     fn next(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Next))
+            .send(UserEvent::MprisCommand(MprisCommand::Next))
             .ok();
     }
 
     fn previous(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Previous))
+            .send(UserEvent::MprisCommand(MprisCommand::Previous))
             .ok();
     }
 
     fn pause(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Pause))
+            .send(UserEvent::MprisCommand(MprisCommand::Pause))
             .ok();
     }
 
     fn play_pause(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::PlayPause))
+            .send(UserEvent::MprisCommand(MprisCommand::PlayPause))
             .ok();
     }
 
     fn stop(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Stop))
+            .send(UserEvent::MprisCommand(MprisCommand::Stop))
             .ok();
     }
 
     fn play(&self) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Play))
+            .send(UserEvent::MprisCommand(MprisCommand::Play))
             .ok();
     }
 
     fn seek(&self, offset: i64) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::Seek(offset)))
+            .send(UserEvent::MprisCommand(MprisCommand::Seek(offset)))
             .ok();
     }
 
     fn set_position(&self, _track_id: zbus::zvariant::ObjectPath<'_>, position: i64) {
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::SetPosition(position)))
+            .send(UserEvent::MprisCommand(MprisCommand::SetPosition(position)))
             .ok();
     }
 
@@ -275,7 +275,7 @@ impl MprisPlayerImpl {
     fn set_rate(&self, rate: f64) {
         self.state.write().unwrap().rate = rate;
         self.proxy
-            .send_event(UserEvent::MprisCommand(MprisCommand::SetRate(rate)))
+            .send(UserEvent::MprisCommand(MprisCommand::SetRate(rate)))
             .ok();
     }
 
@@ -354,7 +354,7 @@ impl MprisPlayerImpl {
     }
 }
 
-pub fn start_mpris_service(proxy: EventLoopProxy<UserEvent>) -> MprisController {
+pub fn start_mpris_service(proxy: Sender<UserEvent>) -> MprisController {
     let state = Arc::new(RwLock::new(MprisState::default()));
     let state_clone = state.clone();
     let (update_tx, mut update_rx) = unbounded_channel::<MprisStateUpdate>();

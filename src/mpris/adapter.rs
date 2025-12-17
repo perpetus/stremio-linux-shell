@@ -1,6 +1,6 @@
 use super::service::{MprisController, start_mpris_service};
 use crate::shared::types::UserEvent;
-use winit::event_loop::EventLoopProxy;
+use flume::Sender;
 
 pub struct MprisAdapter {
     controller: MprisController,
@@ -11,7 +11,7 @@ pub struct MprisAdapter {
 }
 
 impl MprisAdapter {
-    pub fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+    pub fn new(proxy: Sender<UserEvent>) -> Self {
         let controller = start_mpris_service(proxy);
         Self {
             controller,

@@ -1,5 +1,7 @@
 use std::{
+    env,
     io::{BufRead, BufReader},
+    path::PathBuf,
     process::{self, Child, Command},
     thread,
 };
@@ -7,40 +9,29 @@ use std::{
 use anyhow::{Context, Ok};
 use tracing::debug;
 
-use crate::config::ServerConfig;
-
 pub struct Server {
-    config: ServerConfig,
     process: Option<Child>,
+    file: PathBuf,
 }
 
 impl Server {
-    pub fn new(config: ServerConfig) -> Self {
+    pub fn new() -> Self {
+        let server_path = env::var("SERVER_PATH").expect("Failed to read SERVER_PATH env");
+        let file = PathBuf::from(&server_path);
+
         Self {
-            config,
             process: None,
+            file,
         }
     }
 
     pub fn start(&mut self, dev: bool) -> anyhow::Result<()> {
-        if std::net::TcpStream::connect("127.0.0.1:11470").is_ok() {
-            debug!(target: "server", "Server already running on port 11470, skipping spawn");
-            return Ok(());
-        }
-
-        use std::os::unix::process::CommandExt;
-        let mut child = unsafe {
-            Command::new("node")
-                .env("NO_CORS", (dev as i32).to_string())
-                .arg(self.config.file.as_os_str())
-                .stdout(process::Stdio::piped())
-                .pre_exec(|| {
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                    Result::Ok(())
-                })
-                .spawn()
-                .context("Failed to start server")?
-        };
+        let mut child = Command::new("node")
+            .env("NO_CORS", (dev as i32).to_string())
+            .arg(self.file.as_os_str())
+            .stdout(process::Stdio::piped())
+            .spawn()
+            .context("Failed to start server")?;
 
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
